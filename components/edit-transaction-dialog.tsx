@@ -13,23 +13,11 @@ import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import type { Account, Category, Debt, Project, Transaction } from "@/lib/types"
 
-/* =========================
-   Helpers (safe numbers + routing)
-   ========================= */
-const num = (v: any) => {
-  if (v === null || v === undefined) return 0
+/** Безопасно число (0 при null/празно, заменя запетайки с точки) */
+const num = (v: any): number => {
+  if (v === null || v === undefined || v === "") return 0
   const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v)
   return Number.isFinite(n) ? n : 0
-}
-
-/** Правило: ако няма K1 с ДДС -> за акаунтите ползваме Total без ДДС, иначе Total с ДДС */
-function getAmountForAccounts(opts: {
-  k1WithVat?: string | number | null
-  totalWithVat: number
-  totalWithoutVat: number
-}) {
-  const hasK1WithVat = (opts.k1WithVat ?? "").toString().trim() !== "" && num(opts.k1WithVat) !== 0
-  return hasK1WithVat ? opts.totalWithVat : opts.totalWithoutVat
 }
 
 interface EditTransactionDialogProps {
@@ -85,58 +73,59 @@ export function EditTransactionDialog({
     return parent?.type === "expense"
   })
 
+  /** При въвеждане на K1 с ДДС → смятаме без ДДС и ДДС */
   const handleAmountWithVatChange = (value: string) => {
-    const withVat = Number.parseFloat(value) || 0
+    const withVat = num(value)
     const withoutVat = withVat / 1.2
     const vat = withVat - withoutVat
 
-    setFormData({
-      ...formData,
+    setFormData((prev) => ({
+      ...prev,
       amount_with_vat: value,
-      amount_without_vat: withoutVat.toFixed(2),
-      vat_amount: vat.toFixed(2),
-    })
+      amount_without_vat: withVat ? withoutVat.toFixed(2) : "",
+      vat_amount: withVat ? vat.toFixed(2) : "",
+    }))
   }
 
+  /** При въвеждане на K1 без ДДС → чистим K1 с ДДС и ДДС (остават празни) */
   const handleAmountWithoutVatChange = (value: string) => {
-    setFormData({
-      ...formData,
+    setFormData((prev) => ({
+      ...prev,
       amount_without_vat: value,
       amount_with_vat: "",
       vat_amount: "",
-    })
+    }))
   }
+
+  const supabase = createClient()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
-    const supabase = createClient()
+    // Парсване
+    let withVat = formData.amount_with_vat ? num(formData.amount_with_vat) : 0
+    let withoutVat = formData.amount_without_vat ? num(formData.amount_without_vat) : 0
+    let vatAmount = formData.vat_amount ? num(formData.vat_amount) : 0
+    let k2Amount = formData.k2_amount ? num(formData.k2_amount) : 0
 
-    // парсваме стойностите от формата
-    let amountWithVat = formData.amount_with_vat ? Number.parseFloat(formData.amount_with_vat) : null
-    let amountWithoutVat = formData.amount_without_vat ? Number.parseFloat(formData.amount_without_vat) : null
-    let vatAmount = formData.vat_amount ? Number.parseFloat(formData.vat_amount) : null
-    let k2Amount = formData.k2_amount ? Number.parseFloat(formData.k2_amount) : null
-
-    // знак за разход/трансфер (отрицателни суми)
-    if (formData.type === "expense" || formData.type === "transfer") {
-      if (amountWithVat && amountWithVat > 0) amountWithVat = -amountWithVat
-      if (amountWithoutVat && amountWithoutVat > 0) amountWithoutVat = -amountWithoutVat
-      if (vatAmount && vatAmount > 0) vatAmount = -vatAmount
-      if (k2Amount && k2Amount > 0) k2Amount = -k2Amount
+    // Нормализиране на знака за разход/трансфер
+    const isNegative = formData.type === "expense" || formData.type === "transfer"
+    if (isNegative) {
+      if (withVat > 0) withVat = -withVat
+      if (withoutVat > 0) withoutVat = -withoutVat
+      if (vatAmount > 0) vatAmount = -vatAmount
+      if (k2Amount > 0) k2Amount = -k2Amount
     }
 
-    // тотали за акаунтно отчитане (включват K2)
-    const totalWithVat = (amountWithVat ?? 0) + (k2Amount ?? 0)
-    const totalWithoutVat = (amountWithoutVat ?? 0) + (k2Amount ?? 0)
-
-    // ефективна сума според правилото (ако няма K1 с ДДС -> ползваме totalWithoutVat)
-    const account_amount = getAmountForAccounts({
-      k1WithVat: formData.amount_with_vat,
-      totalWithVat,
-      totalWithoutVat,
-    })
+    // Правило за account_amount:
+    // - ако K1 с ДДС е празно/0 → взимаме Total без ДДС (K1 без ДДС + K2),
+    // - иначе → Total с ДДС (K1 с ДДС + K2).
+    const withVatAbs = Math.abs(withVat)
+    const accountAmount =
+      withVatAbs === 0
+        ? withoutVat + k2Amount // режим "без ДДС"
+        : withVat + k2Amount // режим "с ДДС"
 
     const transactionData: any = {
       transaction_date: formData.transaction_date,
@@ -147,12 +136,15 @@ export function EditTransactionDialog({
       debt_id: formData.debt_id || null,
       project_id: formData.project_id || null,
       to_account_id: formData.type === "transfer" ? formData.to_account_id : null,
-      amount_with_vat: amountWithVat,
-      amount_without_vat: amountWithoutVat,
-      vat_amount: vatAmount,
-      k2_amount: k2Amount,
-      // ново поле – изпращаме към бекенда
-      account_amount,
+
+      amount_with_vat: withVat || null,
+      amount_without_vat: withoutVat || null,
+      vat_amount: vatAmount || null,
+      k2_amount: k2Amount || null,
+
+      // ново поле – за по-лесна агрегация в акаунтите/репорти:
+      account_amount: accountAmount,
+
       notes: formData.notes || null,
       is_recurring: formData.is_recurring,
       recurrence_frequency: formData.is_recurring ? formData.recurrence_frequency : null,
@@ -171,9 +163,7 @@ export function EditTransactionDialog({
     onOpenChange(false)
     setLoading(false)
 
-    if (onTransactionUpdated) {
-      onTransactionUpdated()
-    }
+    if (onTransactionUpdated) onTransactionUpdated()
     router.refresh()
   }
 
@@ -184,6 +174,7 @@ export function EditTransactionDialog({
           <DialogTitle>Edit Transaction</DialogTitle>
           <DialogDescription>Update transaction details</DialogDescription>
         </DialogHeader>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -198,7 +189,7 @@ export function EditTransactionDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="pl_date">P&L Date</Label>
+              <Label htmlFor="pl_date">P&amp;L Date</Label>
               <Input
                 id="pl_date"
                 type="date"
@@ -212,10 +203,7 @@ export function EditTransactionDialog({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="account_id">Account</Label>
-              <Select
-                value={formData.account_id}
-                onValueChange={(value) => setFormData({ ...formData, account_id: value })}
-              >
+              <Select value={formData.account_id} onValueChange={(value) => setFormData({ ...formData, account_id: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select account" />
                 </SelectTrigger>
@@ -257,9 +245,7 @@ export function EditTransactionDialog({
                 <SelectContent>
                   {incomeCategories.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-sm font-semibold text-green-700 bg-green-50">
-                        Income Categories
-                      </div>
+                      <div className="px-2 py-1.5 text-sm font-semibold text-green-700 bg-green-50">Income Categories</div>
                       {incomeCategories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
                           {category.name}
@@ -267,11 +253,10 @@ export function EditTransactionDialog({
                       ))}
                     </>
                   )}
+
                   {expenseCategories.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-sm font-semibold text-red-700 bg-red-50 mt-1">
-                        Expense Categories
-                      </div>
+                      <div className="px-2 py-1.5 text-sm font-semibold text-red-700 bg-red-50 mt-1">Expense Categories</div>
                       {expenseCategories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
                           {category.name}
@@ -285,10 +270,7 @@ export function EditTransactionDialog({
 
             <div className="space-y-2">
               <Label htmlFor="project_id">Project</Label>
-              <Select
-                value={formData.project_id}
-                onValueChange={(value) => setFormData({ ...formData, project_id: value })}
-              >
+              <Select value={formData.project_id} onValueChange={(value) => setFormData({ ...formData, project_id: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select project (optional)" />
                 </SelectTrigger>
@@ -344,8 +326,10 @@ export function EditTransactionDialog({
             </div>
           )}
 
+          {/* Amounts */}
           <div className="space-y-3">
             <Label>Amounts</Label>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="amount_with_vat" className="text-sm font-semibold">
@@ -379,14 +363,7 @@ export function EditTransactionDialog({
                 <Label htmlFor="vat_amount" className="text-sm font-semibold">
                   VAT
                 </Label>
-                <Input
-                  id="vat_amount"
-                  type="number"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={formData.vat_amount}
-                  disabled
-                />
+                <Input id="vat_amount" type="number" step="0.01" placeholder="0.00" value={formData.vat_amount} disabled />
               </div>
 
               <div className="space-y-2">
@@ -408,22 +385,19 @@ export function EditTransactionDialog({
               <div className="space-y-1">
                 <Label className="text-sm font-semibold">Total with VAT</Label>
                 <div className="text-lg font-bold">
-                  {(
-                    (Number.parseFloat(formData.amount_with_vat) || 0) + (Number.parseFloat(formData.k2_amount) || 0)
-                  ).toFixed(2)}
+                  {(num(formData.amount_with_vat) + num(formData.k2_amount)).toFixed(2)}
                 </div>
               </div>
               <div className="space-y-1">
                 <Label className="text-sm font-semibold">Total without VAT</Label>
                 <div className="text-lg font-bold">
-                  {(
-                    (Number.parseFloat(formData.amount_without_vat) || 0) + (Number.parseFloat(formData.k2_amount) || 0)
-                  ).toFixed(2)}
+                  {(num(formData.amount_without_vat) + num(formData.k2_amount)).toFixed(2)}
                 </div>
               </div>
             </div>
           </div>
 
+          {/* Notes / Recurrence */}
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
             <Textarea
