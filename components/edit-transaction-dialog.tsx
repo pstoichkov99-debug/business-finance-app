@@ -13,6 +13,25 @@ import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import type { Account, Category, Debt, Project, Transaction } from "@/lib/types"
 
+/* =========================
+   Helpers (safe numbers + routing)
+   ========================= */
+const num = (v: any) => {
+  if (v === null || v === undefined) return 0
+  const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+/** Правило: ако няма K1 с ДДС -> за акаунтите ползваме Total без ДДС, иначе Total с ДДС */
+function getAmountForAccounts(opts: {
+  k1WithVat?: string | number | null
+  totalWithVat: number
+  totalWithoutVat: number
+}) {
+  const hasK1WithVat = (opts.k1WithVat ?? "").toString().trim() !== "" && num(opts.k1WithVat) !== 0
+  return hasK1WithVat ? opts.totalWithVat : opts.totalWithoutVat
+}
+
 interface EditTransactionDialogProps {
   transaction: Transaction
   accounts: Account[]
@@ -94,22 +113,30 @@ export function EditTransactionDialog({
 
     const supabase = createClient()
 
+    // парсваме стойностите от формата
     let amountWithVat = formData.amount_with_vat ? Number.parseFloat(formData.amount_with_vat) : null
     let amountWithoutVat = formData.amount_without_vat ? Number.parseFloat(formData.amount_without_vat) : null
     let vatAmount = formData.vat_amount ? Number.parseFloat(formData.vat_amount) : null
     let k2Amount = formData.k2_amount ? Number.parseFloat(formData.k2_amount) : null
 
-    if (formData.type === "expense") {
-      if (amountWithVat && amountWithVat > 0) amountWithVat = -amountWithVat
-      if (amountWithoutVat && amountWithoutVat > 0) amountWithoutVat = -amountWithoutVat
-      if (vatAmount && vatAmount > 0) vatAmount = -vatAmount
-      if (k2Amount && k2Amount > 0) k2Amount = -k2Amount
-    } else if (formData.type === "transfer") {
+    // знак за разход/трансфер (отрицателни суми)
+    if (formData.type === "expense" || formData.type === "transfer") {
       if (amountWithVat && amountWithVat > 0) amountWithVat = -amountWithVat
       if (amountWithoutVat && amountWithoutVat > 0) amountWithoutVat = -amountWithoutVat
       if (vatAmount && vatAmount > 0) vatAmount = -vatAmount
       if (k2Amount && k2Amount > 0) k2Amount = -k2Amount
     }
+
+    // тотали за акаунтно отчитане (включват K2)
+    const totalWithVat = (amountWithVat ?? 0) + (k2Amount ?? 0)
+    const totalWithoutVat = (amountWithoutVat ?? 0) + (k2Amount ?? 0)
+
+    // ефективна сума според правилото (ако няма K1 с ДДС -> ползваме totalWithoutVat)
+    const account_amount = getAmountForAccounts({
+      k1WithVat: formData.amount_with_vat,
+      totalWithVat,
+      totalWithoutVat,
+    })
 
     const transactionData: any = {
       transaction_date: formData.transaction_date,
@@ -124,6 +151,8 @@ export function EditTransactionDialog({
       amount_without_vat: amountWithoutVat,
       vat_amount: vatAmount,
       k2_amount: k2Amount,
+      // ново поле – изпращаме към бекенда
+      account_amount,
       notes: formData.notes || null,
       is_recurring: formData.is_recurring,
       recurrence_frequency: formData.is_recurring ? formData.recurrence_frequency : null,
