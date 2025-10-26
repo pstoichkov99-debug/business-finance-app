@@ -123,3 +123,7 @@
     @apply bg-background text-foreground;
   }
 }
+/* === Table grid utility for clearer separators === */
+.table-grid { @apply border border-border border-collapse; }
+.table-grid th, .table-grid td { @apply border border-border; }
+.table-grid thead th { @apply bg-muted/40; }
