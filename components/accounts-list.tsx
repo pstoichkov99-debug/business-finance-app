@@ -68,7 +68,7 @@ export function AccountsList({ accounts: initialAccounts }: AccountsListProps) {
   const renderAccountRows = (accountsList: Account[]) => {
     return accountsList.map((account) => (
       <TableRow key={account.id}>
-        <TableCell className="font-medium table-grid">
+        <TableCell className="font-medium table-grid table-grid">
           <div className="flex items-center gap-2">
             {getAccountIcon(account.account_type, account.account_location)}
             {account.name}

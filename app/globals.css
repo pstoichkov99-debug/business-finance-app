@@ -137,3 +137,13 @@
 .table-grid td {
   border: 1px solid hsl(var(--border));
 }
+
+/* === OVERRIDE: full grid for tables (vertical + horizontal) === */
+.table-grid{
+  border-collapse: collapse !important;
+  border: 1px solid hsl(var(--border)) !important;
+}
+/* Хваща всички <th>/<td> в thead/tbody/tfoot */
+.table-grid > :not(caption) > * > *{
+  border: 1px solid hsl(var(--border)) !important;
+}
