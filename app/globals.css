@@ -127,3 +127,13 @@
 .table-grid { @apply border border-border border-collapse; }
 .table-grid th, .table-grid td { @apply border border-border; }
 .table-grid thead th { @apply bg-muted/40; }
+
+/* === Strong table grid (vertical + horizontal borders) === */
+.table-grid { 
+  border-collapse: collapse;
+  border: 1px solid hsl(var(--border));
+}
+.table-grid th, 
+.table-grid td {
+  border: 1px solid hsl(var(--border));
+}
