@@ -13,25 +13,37 @@ interface AccountsListProps {
   accounts: Account[]
 }
 
+// безопасен Number → 2 знака
+const toMoney = (v: unknown) => {
+  const n = typeof v === "number" ? v : Number(v ?? 0)
+  return Number.isFinite(n) ? n : 0
+}
+
 export function AccountsList({ accounts: initialAccounts }: AccountsListProps) {
   const [accounts, setAccounts] = useState(initialAccounts)
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const router = useRouter()
 
   const paymentBankAccounts = accounts.filter(
-    (a) => (a.account_type === "payment" || !a.account_type) && (a.account_location === "bank" || a.type === "bank"),
+    (a) =>
+      (a.account_type === "payment" || !a.account_type) &&
+      (a.account_location === "bank" || a.type === "bank"),
   )
+
   const paymentCashAccounts = accounts.filter(
-    (a) => (a.account_type === "payment" || !a.account_type) && (a.account_location === "cash" || a.type === "cash"),
+    (a) =>
+      (a.account_type === "payment" || !a.account_type) &&
+      (a.account_location === "cash" || a.type === "cash"),
   )
+
   const savingsAccounts = accounts.filter((a) => a.account_type === "savings")
   const creditAccounts = accounts.filter((a) => a.account_type === "credit" || a.type === "credit_card")
 
   const getSubtotal = (accountsList: Account[]) => {
-    return accountsList.reduce((sum, acc) => sum + acc.current_balance, 0)
+    return accountsList.reduce((sum, acc) => sum + toMoney(acc.current_balance), 0)
   }
 
-  const grandTotal = accounts.reduce((sum, acc) => sum + acc.current_balance, 0)
+  const grandTotal = accounts.reduce((sum, acc) => sum + toMoney(acc.current_balance), 0)
 
   const getAccountIcon = (accountType: string, accountLocation: string) => {
     if (accountType === "credit") return <CreditCard className="h-4 w-4" />
@@ -68,22 +80,22 @@ export function AccountsList({ accounts: initialAccounts }: AccountsListProps) {
   const renderAccountRows = (accountsList: Account[]) => {
     return accountsList.map((account) => (
       <TableRow key={account.id}>
-        <TableCell className="font-medium table-grid table-grid table-grid">
+        <TableCell className="font-medium">
           <div className="flex items-center gap-2">
             {getAccountIcon(account.account_type, account.account_location)}
             {account.name}
           </div>
         </TableCell>
         <TableCell>{getAccountTypeLabel(account.account_type, account.account_location)}</TableCell>
-        <TableCell className="text-right">{account.initial_balance.toFixed(2)}</TableCell>
-        <TableCell className="text-right font-semibold">{account.current_balance.toFixed(2)}</TableCell>
+        <TableCell className="text-right">{toMoney(account.initial_balance).toFixed(2)}</TableCell>
+        <TableCell className="text-right font-semibold">{toMoney(account.current_balance).toFixed(2)}</TableCell>
         <TableCell>{account.currency}</TableCell>
         <TableCell className="text-right">
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="icon" onClick={() => setEditingAccount(account)}>
+            <Button variant="ghost" size="icon" onClick={() => setEditingAccount(account)} aria-label="Edit account">
               <Pencil className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={() => handleDelete(account.id)}>
+            <Button variant="ghost" size="icon" onClick={() => handleDelete(account.id)} aria-label="Delete account">
               <Trash2 className="h-4 w-4" />
             </Button>
           </div>
@@ -105,6 +117,7 @@ export function AccountsList({ accounts: initialAccounts }: AccountsListProps) {
   return (
     <>
       <div className="border rounded-lg">
+        {/* класът table-grid дава хор. и вертикални линии */}
         <Table className="table-grid">
           <TableHeader>
             <TableRow>
