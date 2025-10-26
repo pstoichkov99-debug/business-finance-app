@@ -1,33 +1,33 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Plus } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
 import type { Account, Category, Debt, Project } from "@/lib/types"
+
+/** Safe number (0 за null/празно, заменя запетайка с точка) */
+const num = (v: any): number => {
+  if (v === null || v === undefined || v === "") return 0
+  const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v)
+  return Number.isFinite(n) ? n : 0
+}
 
 interface AddTransactionDialogProps {
   accounts: Account[]
   categories: Category[]
   debts: Debt[]
   projects: Project[]
-  onTransactionAdded?: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onTransactionCreated?: () => void
 }
 
 export function AddTransactionDialog({
@@ -35,15 +35,21 @@ export function AddTransactionDialog({
   categories,
   debts,
   projects,
-  onTransactionAdded,
+  open,
+  onOpenChange,
+  onTransactionCreated,
 }: AddTransactionDialogProps) {
-  const [open, setOpen] = useState(false)
+  const router = useRouter()
+  const supabase = createClient()
+
+  const today = new Date().toISOString().slice(0, 10)
+
   const [loading, setLoading] = useState(false)
   const [formData, setFormData] = useState({
-    transaction_date: new Date().toISOString().split("T")[0],
-    pl_date: new Date().toISOString().split("T")[0],
-    account_id: "",
-    type: "expense",
+    transaction_date: today,
+    pl_date: today,
+    account_id: accounts[0]?.id || "",
+    type: "expense" as "income" | "expense" | "transfer",
     category_id: "",
     debt_id: "",
     project_id: "",
@@ -58,7 +64,6 @@ export function AddTransactionDialog({
     recurrence_interval: "1",
     recurrence_end_date: "",
   })
-  const router = useRouter()
 
   const childCategories = categories.filter((c) => c.parent_id !== null)
   const incomeCategories = childCategories.filter((c) => {
@@ -70,126 +75,53 @@ export function AddTransactionDialog({
     return parent?.type === "expense"
   })
 
+  /** K1 с ДДС → изчислява без ДДС и ДДС */
   const handleAmountWithVatChange = (value: string) => {
-    const withVat = Number.parseFloat(value) || 0
+    const withVat = num(value)
     const withoutVat = withVat / 1.2
     const vat = withVat - withoutVat
-
-    setFormData({
-      ...formData,
+    setFormData((prev) => ({
+      ...prev,
       amount_with_vat: value,
-      amount_without_vat: withoutVat.toFixed(2),
-      vat_amount: vat.toFixed(2),
-    })
+      amount_without_vat: withVat ? withoutVat.toFixed(2) : "",
+      vat_amount: withVat ? vat.toFixed(2) : "",
+    }))
   }
 
+  /** K1 без ДДС → чисти К1 с ДДС и ДДС */
   const handleAmountWithoutVatChange = (value: string) => {
-    setFormData({
-      ...formData,
+    setFormData((prev) => ({
+      ...prev,
       amount_without_vat: value,
       amount_with_vat: "",
       vat_amount: "",
-    })
+    }))
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
 
-    const supabase = createClient()
+    // parse
+    let withVat = formData.amount_with_vat ? num(formData.amount_with_vat) : 0
+    let withoutVat = formData.amount_without_vat ? num(formData.amount_without_vat) : 0
+    let vatAmount = formData.vat_amount ? num(formData.vat_amount) : 0
+    let k2Amount = formData.k2_amount ? num(formData.k2_amount) : 0
 
-    console.log("[v0] Starting transaction creation, account_id:", formData.account_id)
-
-    const { data: account, error: accountFetchError } = await supabase
-      .from("accounts")
-      .select("current_balance, initial_balance")
-      .eq("id", formData.account_id)
-      .single()
-
-    console.log("[v0] Account data:", account, "Error:", accountFetchError)
-
-    if (accountFetchError) {
-      alert("Error fetching account: " + (accountFetchError?.message || "Unknown error"))
-      setLoading(false)
-      return
+    // знак за expense/transfer
+    const isNegative = formData.type === "expense" || formData.type === "transfer"
+    if (isNegative) {
+      if (withVat > 0) withVat = -withVat
+      if (withoutVat > 0) withoutVat = -withoutVat
+      if (vatAmount > 0) vatAmount = -vatAmount
+      if (k2Amount > 0) k2Amount = -k2Amount
     }
 
-    if (account && account.current_balance === null) {
-      console.log("[v0] Account has NULL balance, fixing...")
-      const balanceToSet = account.initial_balance ?? 0
-      console.log("[v0] Setting balance to:", balanceToSet)
+    // account_amount правило
+    const accountAmount =
+      Math.abs(withVat) === 0 ? withoutVat + k2Amount : withVat + k2Amount
 
-      const { error: updateError } = await supabase
-        .from("accounts")
-        .update({ current_balance: balanceToSet })
-        .eq("id", formData.account_id)
-
-      if (updateError) {
-        console.log("[v0] Error updating account balance:", updateError)
-        alert("Error updating account balance: " + (updateError?.message || "Unknown error"))
-        setLoading(false)
-        return
-      }
-
-      console.log("[v0] Account balance updated successfully")
-    }
-
-    if (formData.type === "transfer" && formData.to_account_id) {
-      const { data: toAccount, error: toAccountFetchError } = await supabase
-        .from("accounts")
-        .select("current_balance, initial_balance")
-        .eq("id", formData.to_account_id)
-        .single()
-
-      console.log("[v0] Destination account data:", toAccount, "Error:", toAccountFetchError)
-
-      if (toAccountFetchError) {
-        alert("Error fetching destination account: " + (toAccountFetchError?.message || "Unknown error"))
-        setLoading(false)
-        return
-      }
-
-      if (toAccount && toAccount.current_balance === null) {
-        console.log("[v0] Destination account has NULL balance, fixing...")
-        const balanceToSet = toAccount.initial_balance ?? 0
-        console.log("[v0] Setting destination balance to:", balanceToSet)
-
-        const { error: updateError } = await supabase
-          .from("accounts")
-          .update({ current_balance: balanceToSet })
-          .eq("id", formData.to_account_id)
-
-        if (updateError) {
-          console.log("[v0] Error updating destination account balance:", updateError)
-          alert("Error updating destination account balance: " + (updateError?.message || "Unknown error"))
-          setLoading(false)
-          return
-        }
-
-        console.log("[v0] Destination account balance updated successfully")
-      }
-    }
-
-    let amountWithVat = formData.amount_with_vat ? Number.parseFloat(formData.amount_with_vat) : 0
-    let amountWithoutVat = formData.amount_without_vat ? Number.parseFloat(formData.amount_without_vat) : 0
-    let vatAmount = formData.vat_amount ? Number.parseFloat(formData.vat_amount) : 0
-    let k2Amount = formData.k2_amount ? Number.parseFloat(formData.k2_amount) : 0
-
-    if (formData.type === "expense") {
-      if (amountWithVat && amountWithVat > 0) amountWithVat = -amountWithVat
-      if (amountWithoutVat && amountWithoutVat > 0) amountWithoutVat = -amountWithoutVat
-      if (vatAmount && vatAmount > 0) vatAmount = -vatAmount
-      if (k2Amount && k2Amount > 0) k2Amount = -k2Amount
-    } else if (formData.type === "transfer") {
-      if (amountWithVat && amountWithVat > 0) amountWithVat = -amountWithVat
-      if (amountWithoutVat && amountWithoutVat > 0) amountWithoutVat = -amountWithoutVat
-      if (vatAmount && vatAmount > 0) vatAmount = -vatAmount
-      if (k2Amount && k2Amount > 0) k2Amount = -k2Amount
-    }
-
-    console.log("[v0] Transaction amounts:", { amountWithVat, amountWithoutVat, vatAmount, k2Amount })
-
-    const transactionData: any = {
+    const payload: any = {
       transaction_date: formData.transaction_date,
       pl_date: formData.pl_date,
       account_id: formData.account_id,
@@ -198,10 +130,14 @@ export function AddTransactionDialog({
       debt_id: formData.debt_id || null,
       project_id: formData.project_id || null,
       to_account_id: formData.type === "transfer" ? formData.to_account_id : null,
-      amount_with_vat: amountWithVat,
-      amount_without_vat: amountWithoutVat,
-      vat_amount: vatAmount,
-      k2_amount: k2Amount,
+
+      amount_with_vat: withVat || null,
+      amount_without_vat: withoutVat || null,
+      vat_amount: vatAmount || null,
+      k2_amount: k2Amount || null,
+
+      account_amount: accountAmount,
+
       notes: formData.notes || null,
       is_recurring: formData.is_recurring,
       recurrence_frequency: formData.is_recurring ? formData.recurrence_frequency : null,
@@ -209,74 +145,28 @@ export function AddTransactionDialog({
       recurrence_end_date: formData.is_recurring && formData.recurrence_end_date ? formData.recurrence_end_date : null,
     }
 
-    console.log("[v0] Inserting transaction:", transactionData)
-
-    const { error } = await supabase.from("transactions").insert(transactionData)
+    const { error } = await supabase.from("transactions").insert(payload)
 
     if (error) {
-      console.log("[v0] Error creating transaction:", error)
       alert("Error creating transaction: " + (error?.message || "Unknown error"))
       setLoading(false)
       return
     }
 
-    console.log("[v0] Transaction created successfully")
-
-    if (formData.debt_id && formData.type === "expense") {
-      const amount = Math.abs(amountWithVat || amountWithoutVat || 0) + Math.abs(k2Amount || 0)
-      const { data: debt } = await supabase.from("debts").select("current_amount").eq("id", formData.debt_id).single()
-      if (debt) {
-        await supabase
-          .from("debts")
-          .update({ current_amount: debt.current_amount - amount })
-          .eq("id", formData.debt_id)
-      }
-    }
-
-    setFormData({
-      transaction_date: new Date().toISOString().split("T")[0],
-      pl_date: new Date().toISOString().split("T")[0],
-      account_id: "",
-      type: "expense",
-      category_id: "",
-      debt_id: "",
-      project_id: "",
-      to_account_id: "",
-      amount_with_vat: "",
-      amount_without_vat: "",
-      vat_amount: "",
-      k2_amount: "",
-      notes: "",
-      is_recurring: false,
-      recurrence_frequency: "monthly",
-      recurrence_interval: "1",
-      recurrence_end_date: "",
-    })
-
-    if (onTransactionAdded) {
-      console.log("[v0] Executing onTransactionAdded")
-      await onTransactionAdded()
-      console.log("[v0] onTransactionAdded completed")
-    }
-
-    setOpen(false)
+    onOpenChange(false)
     setLoading(false)
+    if (onTransactionCreated) onTransactionCreated()
     router.refresh()
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Transaction
-        </Button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add New Transaction</DialogTitle>
+          <DialogTitle>Add Transaction</DialogTitle>
           <DialogDescription>Record a new income, expense, or transfer</DialogDescription>
         </DialogHeader>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -291,7 +181,7 @@ export function AddTransactionDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="pl_date">P&L Date</Label>
+              <Label htmlFor="pl_date">P&amp;L Date</Label>
               <Input
                 id="pl_date"
                 type="date"
@@ -305,10 +195,7 @@ export function AddTransactionDialog({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="account_id">Account</Label>
-              <Select
-                value={formData.account_id}
-                onValueChange={(value) => setFormData({ ...formData, account_id: value })}
-              >
+              <Select value={formData.account_id} onValueChange={(value) => setFormData({ ...formData, account_id: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select account" />
                 </SelectTrigger>
@@ -324,7 +211,7 @@ export function AddTransactionDialog({
 
             <div className="space-y-2">
               <Label htmlFor="type">Type</Label>
-              <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value })}>
+              <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value as any })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -340,19 +227,14 @@ export function AddTransactionDialog({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="category_id">Category</Label>
-              <Select
-                value={formData.category_id}
-                onValueChange={(value) => setFormData({ ...formData, category_id: value })}
-              >
+              <Select value={formData.category_id} onValueChange={(value) => setFormData({ ...formData, category_id: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select category (optional)" />
                 </SelectTrigger>
                 <SelectContent>
                   {incomeCategories.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-sm font-semibold text-green-700 bg-green-50">
-                        Income Categories
-                      </div>
+                      <div className="px-2 py-1.5 text-sm font-semibold text-green-700 bg-green-50">Income Categories</div>
                       {incomeCategories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
                           {category.name}
@@ -360,11 +242,10 @@ export function AddTransactionDialog({
                       ))}
                     </>
                   )}
+
                   {expenseCategories.length > 0 && (
                     <>
-                      <div className="px-2 py-1.5 text-sm font-semibold text-red-700 bg-red-50 mt-1">
-                        Expense Categories
-                      </div>
+                      <div className="px-2 py-1.5 text-sm font-semibold text-red-700 bg-red-50 mt-1">Expense Categories</div>
                       {expenseCategories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
                           {category.name}
@@ -378,10 +259,7 @@ export function AddTransactionDialog({
 
             <div className="space-y-2">
               <Label htmlFor="project_id">Project</Label>
-              <Select
-                value={formData.project_id}
-                onValueChange={(value) => setFormData({ ...formData, project_id: value })}
-              >
+              <Select value={formData.project_id} onValueChange={(value) => setFormData({ ...formData, project_id: value })}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select project (optional)" />
                 </SelectTrigger>
@@ -437,8 +315,10 @@ export function AddTransactionDialog({
             </div>
           )}
 
+          {/* Amounts */}
           <div className="space-y-3">
             <Label>Amounts</Label>
+
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="amount_with_vat" className="text-sm font-semibold">
@@ -472,14 +352,7 @@ export function AddTransactionDialog({
                 <Label htmlFor="vat_amount" className="text-sm font-semibold">
                   VAT
                 </Label>
-                <Input
-                  id="vat_amount"
-                  type="number"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={formData.vat_amount}
-                  disabled
-                />
+                <Input id="vat_amount" type="number" step="0.01" placeholder="0.00" value={formData.vat_amount} disabled />
               </div>
 
               <div className="space-y-2">
@@ -501,22 +374,19 @@ export function AddTransactionDialog({
               <div className="space-y-1">
                 <Label className="text-sm font-semibold">Total with VAT</Label>
                 <div className="text-lg font-bold">
-                  {(
-                    (Number.parseFloat(formData.amount_with_vat) || 0) + (Number.parseFloat(formData.k2_amount) || 0)
-                  ).toFixed(2)}
+                  {(num(formData.amount_with_vat) + num(formData.k2_amount)).toFixed(2)}
                 </div>
               </div>
               <div className="space-y-1">
                 <Label className="text-sm font-semibold">Total without VAT</Label>
                 <div className="text-lg font-bold">
-                  {(
-                    (Number.parseFloat(formData.amount_without_vat) || 0) + (Number.parseFloat(formData.k2_amount) || 0)
-                  ).toFixed(2)}
+                  {(num(formData.amount_without_vat) + num(formData.k2_amount)).toFixed(2)}
                 </div>
               </div>
             </div>
           </div>
 
+          {/* Notes / Recurrence */}
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
             <Textarea
@@ -594,11 +464,11 @@ export function AddTransactionDialog({
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={loading}>
-              {loading ? "Creating..." : "Create Transaction"}
+              {loading ? "Creating..." : "Add Transaction"}
             </Button>
           </div>
         </form>
